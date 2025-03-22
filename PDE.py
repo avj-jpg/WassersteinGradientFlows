@@ -8,15 +8,14 @@ from ngsolve.webgui import Draw
 
 import abc
 
-import numpy as np
-import matplotlib.pyplot as plt
 
 class PDE(abc.ABC):
 
-    dim           = NotImplemented
-    dirichlet_BCs = NotImplemented
-    initialB      = NotImplemented
-    terminalB     = NotImplemented
+    dim             = NotImplemented
+    dirichlet_BCs   = NotImplemented
+    initialB        = NotImplemented
+    terminalB       = NotImplemented
+    nonLinearSolver = NotImplemented
 
     def __init__(
             self,
@@ -27,6 +26,12 @@ class PDE(abc.ABC):
             maxIter:  int
     ):
         
+        if self.nonLinearSolver not in ["newton", "brent"]:
+            raise Exception("Nonlinear solver must be 'newton' or 'brent'.")
+        
+        if self.nonLinearSolver == "brent" and self.dim != 1:
+            raise Exception("Brent method is current only available for dim = 1.")
+            
         self.pdhgErr     = []
         self.stErr       = []
         self.terminalErr = []
@@ -122,20 +127,19 @@ class PDE(abc.ABC):
         self.a.Assemble()
         self.inva = self.a.mat.Inverse(self.fes.FreeDofs())
 
+        if self.nonLinearSolver == 'newton':
+            self.b += Variation(
+                (     self.mh01 ** 2 / (1 + self.V1(self.rho))       
+                +  (self.mh02 ** 2 / (1 + self.V1(self.rho))  if self.dim == 2 else 0 )
+                +   self.nh01 ** 2 / (1 + self.V3(self.rho,))
+                +  (self.nh02 ** 2 / (1 + self.V3(self.rho,)) if self.dim == 2 else 0 )
+                +   self.sh0  ** 2 / (1 + self.V2(self.rho,self.C))
+                +   self.beta ** 2 * self.dE(self.rho) ** 2 * self.V2(self.rho,self.C)
+                + ( self.rho - self.rhoh0) ** 2
+                ) *   self.dx
+            )
         
-        self.b += Variation(
-            (    self.mh01 ** 2 / (1 + self.V1(self.rho))       
-              +  ( self.mh02 ** 2 / (1 + self.V1(self.rho))  if self.dim == 2 else 0 )
-              +  self.nh01 ** 2 / (1 + self.V3(self.rho,))
-              +  ( self.nh02 ** 2 / (1 + self.V3(self.rho,)) if self.dim == 2 else 0 )
-              +  self.sh0  ** 2 / (1 + self.V2(self.rho,self.C))
-              +  self.beta ** 2 * self.dE(self.rho) ** 2 * self.V2(self.rho,self.C)
-              + (self.rho - self.rhoh0) ** 2
-            ) *  self.dx
-        )
-
-        
-        self.c += Variation((self.beta * self.E(self.rhoT) + 0.5 * (self.rhoT-self.rhoTh0) ** 2) * self.dsr)
+        # self.c += Variation((self.beta * self.E(self.rhoT) + 0.5 * (self.rhoT-self.rhoTh0) ** 2) * self.dsr)
 
         # phi terms
         ## rho 
@@ -195,12 +199,27 @@ class PDE(abc.ABC):
     def d2E(self):
         raise NotImplementedError
     
+    @abc.abstractmethod
+    def solveRho(self, m, s, n, rhoBar):
+        raise NotImplementedError
+    
    # Utilities ---------------------------------------------------------------
     def draw(self,rho):
         gfu = GridFunction(L2(self.mesh, order=self.order-1))
         gfu.Set(rho)
         Draw(gfu)
 
+    def saveVTK(self, filename):
+        gfu = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu2 = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu.Set(self.rhoh)
+        gfu2.Set(self.rhohex)
+        vtk = VTKOutput(
+            self.mesh, 
+            coefs = [gfu, gfu2], 
+            names = ["rho", "rhoex"], 
+            filename = filename, subdivision = 4)
+        vtk.Do()
     
 
     # Solver ---------------------------------------------------------------
@@ -220,27 +239,35 @@ class PDE(abc.ABC):
         # Step 3: Non-linear minimization
         ## Get bar variables
         self.rhoh0.Interpolate(self.rhoh + grad(self.phih0)[0] + self.beta * div_sigmah0)
-        self.sh0.Interpolate (self.sh  + self.phih0)
+        if self.C > 0: self.sh0.Interpolate (self.sh  + self.phih0)
         self.mh01.Interpolate(self.mh1 + grad(self.phih0)[1])
         if self.dim == 2: self.mh02.Interpolate(self.mh2 + grad(self.phih0)[2])
         self.nh01.Interpolate(self.nh1 + self.sigmah01)
         if self.dim == 2: self.nh02.Interpolate(self.nh2 + self.sigmah02)
 
-        solvers.Newton(self.b, self.rhoh, printing=False)  
+        if self.nonLinearSolver == "newton":
+            solvers.Newton(self.b, self.rhoh, printing=False) 
+        else: 
+            self.rhoh.vec.FV().NumPy()[:] = self.solveRho(self.mh01, self.sh0, self.nh01, self.rhoh0)
 
         ### Update mh, nh, sh
-        self.mh1.Interpolate(self.rhoh * self.mh01 / (1 + self.rhoh))
-        if self.dim == 2: self.mh2.Interpolate(self.rhoh * self.mh02 / (1 + self.rhoh))
+        self.mh1.Interpolate(self.V1(self.rhoh) * self.mh01 / ( 1 + self.V1(self.rhoh) ) )
+        if self.dim == 2: self.mh2.Interpolate(self.V1(self.rhoh) * self.mh02 / (1 + self.V1(self.rhoh)) )
         self.nh1.Interpolate(self.V3(self.rhoh) * self.nh01 / (1 + self.V3(self.rhoh)))
         if self.dim == 2: self.nh2.Interpolate(self.V3(self.rhoh) * self.nh02 / (1 + self.V3(self.rhoh)))
-        self.sh.Interpolate(self.V2(self.rhoh,self.C)*self.sh0 / (1 + self.V2(self.rhoh,self.C))) 
+        if self.C > 0: self.sh.Interpolate(self.V2(self.rhoh,self.C)*self.sh0 / (1 + self.V2(self.rhoh,self.C))) 
 
         ## solve for rhoT
-        self.rhoTh0.Interpolate(self.rhoTh - self.phih0, definedon=self.mesh.Boundaries(self.terminalB))
-        self.drhoTh.data = self.rhoTh.vec 
-        solvers.Newton(self.c, self.rhoTh, printing=False)
-        self.drhoTh.data -= self.rhoTh.vec
+        # self.rhoTh0.Interpolate(self.rhoTh - self.phih0, definedon=self.mesh.Boundaries(self.terminalB))
+        # self.drhoTh.data = self.rhoTh.vec 
+        # solvers.Newton(self.c, self.rhoTh, printing=False)
+        # self.drhoTh.data -= self.rhoTh.vec
         
+        self.drhoTh.data = self.rhoTh.vec 
+        self.rhoTh.Interpolate(self.rhoTh - self.phih0, definedon=self.mesh.Boundaries(self.terminalB))
+        self.rhoTh.vec.FV().NumPy()[:] += - self.beta * self.dE(self.drhoTh.FV().NumPy()[:])
+        self.drhoTh.data -= self.rhoTh.vec
+
         # Step 2: Extrapolation
         self.phih0.vec.data    = -self.phih.vec
         self.sigmah01.vec.data = -self.sigmah1.vec
@@ -248,9 +275,9 @@ class PDE(abc.ABC):
 
     def solve(self):
         with TaskManager():
-            for i in range(self.maxIter):
+            for i in range(1,self.maxIter+1):
                 self.timestep()
-                if (i%self.printNum)==0:
+                if ( i % self.printNum)==0:
                     self.err = max(max(self.drhoTh), -min(self.drhoTh))
                     self.pdhgErr.append(self.err)
 
@@ -263,3 +290,5 @@ class PDE(abc.ABC):
                     print('Iteration: %4i PDHG error: %.8e spacetime error: %.8e terminal error %.8e'%(
                     i, self.err, self.err1, self.err2), end="\r")
             print("\n")
+
+

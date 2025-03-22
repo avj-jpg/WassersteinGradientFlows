@@ -27,6 +27,8 @@ class HEAT(PDE):
     
     def d2E(self, rho):
         return 1 / rho
+    
+    
 
 class HEAT1D(HEAT):
 
@@ -34,7 +36,7 @@ class HEAT1D(HEAT):
     dirichlet_BCs = "top|bottom"
     initialB      = "left"
     terminalB     = "right"
-
+    nonLinearSolver = "newton"
     
     def __init__(
         self,
@@ -66,11 +68,16 @@ class HEAT1D(HEAT):
     def initial_guess(self):
         return 1 + 0.5 * cos(2 * pi * y) * exp(-0 * (4 * pi ** 2 + self.C) * self.beta) 
     
+    def solveRho(self, m, s, n, rhoBar):
+        # Not utilized.
+        return 0
+    
 class HEAT2D(HEAT):
     dim           = 2
     dirichlet_BCs = "top|bottom|left|right"
     initialB      = "back"
     terminalB     = "front"
+    nonLinearSolver = "newton"
 
     def __init__(
         self,
