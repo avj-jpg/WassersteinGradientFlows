@@ -6,6 +6,9 @@ from ngsolve import *
 from ngsolve.comp import IntegrationRuleSpace, IntegrationRuleSpaceSurface
 from ngsolve.webgui import Draw
 
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import numpy as np
 import abc
 
 
@@ -203,26 +206,8 @@ class PDE(abc.ABC):
     def solveRho(self, m, s, n, rhoBar):
         raise NotImplementedError
     
-   # Utilities ---------------------------------------------------------------
-    def draw(self,rho):
-        gfu = GridFunction(L2(self.mesh, order=self.order-1))
-        gfu.Set(rho)
-        Draw(gfu)
 
-    def saveVTK(self, filename):
-        gfu = GridFunction(L2(self.mesh, order=self.order-1))
-        gfu2 = GridFunction(L2(self.mesh, order=self.order-1))
-        gfu.Set(self.rhoh)
-        gfu2.Set(self.rhohex)
-        vtk = VTKOutput(
-            self.mesh, 
-            coefs = [gfu, gfu2], 
-            names = ["rho", "rhoex"], 
-            filename = filename, subdivision = 4)
-        vtk.Do()
-    
-
-    # Solver ---------------------------------------------------------------
+# Solver ---------------------------------------------------------------
     def timestep(self):
         # Step 1: solve for Lagrange multipliers
         self.f.Assemble()
@@ -290,5 +275,202 @@ class PDE(abc.ABC):
                     print('Iteration: %4i PDHG error: %.8e spacetime error: %.8e terminal error %.8e'%(
                     i, self.err, self.err1, self.err2), end="\r")
             print("\n")
+
+   # Utilities ---------------------------------------------------------------
+    def draw(self,rho):
+        gfu = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu.Set(rho)
+        Draw(gfu)
+
+    def animate(self, fig, ax, save=False):
+        if self.dim != 1: raise NotImplementedError
+
+        t_ = self.getXIntPoints()
+        x_ = self.getYIntPoints()
+
+        
+        line1, = ax.plot([], [], '--k', label=r'Initial condition')
+        line2, = ax.plot([], [], '--r', label=r'Exact solution')
+        #line3, = ax.plot([], [], '-k', label='rhoh at t_[0]')
+        line4, = ax.plot([], [], '-r', label=r'Numerical solution')
+
+        ax.set_xlim(min(x_), max(x_))
+        ax.set_ylim(0,1.05)
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(r'$\rho(x)$')
+        ax.legend(loc = "upper left")
+        
+
+        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
+        #initial_y_rhoh = self.evaluateQuadratureFun(t_[0], x_, self.rhoh)
+        
+        def anim(i):
+            current_t = t_[i]
+            current_y_rhohex = self.evaluateQuadratureFun(current_t, x_, self.rhohex)
+            current_y_rhoh = self.evaluateQuadratureFun(current_t, x_, self.rhoh)
+            
+            line1.set_data(x_, initial_y_rhohex)
+            line2.set_data(x_, current_y_rhohex)
+            #line3.set_data(x_, initial_y_rhoh)
+            line4.set_data(x_, current_y_rhoh)
+
+            ax.set_title(r'Time $t = $'+ "{:.3f}".format(current_t))
+            return line1, line2, line4
+
+        ani = animation.FuncAnimation(
+            fig, anim, frames=len(t_), interval=25, blit=True, repeat=False
+        )
+
+        plt.show()
+        if save:
+            filename = "alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+            ani.save(filename + ".gif", writer='pillow', fps=20)
+
+    def animateWithErr(self, fig, ax):
+        if self.dim != 1: raise NotImplementedError
+        if len(ax) !=2: raise Exception("Length of ax must be two.")
+
+        t_ = self.getXIntPoints()
+        x_ = self.getYIntPoints()
+
+        ax1, ax2 = ax[0], ax[1]
+        line1, = ax1.plot([], [], '--k', label=r'Initial condition')
+        line2, = ax1.plot([], [], '--r', label=r'Exact solution')
+        line4, = ax1.plot([], [], '-r', label=r'Numerical solution')
+
+        ax1.set_xlim(min(x_), max(x_))
+        ax1.set_ylim(0, 1)
+        ax1.set_xlabel(r'$x$')
+        ax1.set_ylabel(r'$\rho(x)$')
+        ax1.legend(loc="upper left")
+
+        error_line, = ax2.semilogy([], [], '-b', label=r'Error (Exact - Numerical)')
+        ax2.set_xlim(min(x_), max(x_))
+        ax2.set_ylim(1e-8, 1)  
+        ax2.set_xlabel(r'$x$')
+        ax2.set_ylabel(r'Error')
+
+        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
+
+        def anim(i):
+            current_t = t_[i]
+            current_y_rhohex = np.array(self.evaluateQuadratureFun(current_t, x_, self.rhohex))
+            current_y_rhoh = np.array(self.evaluateQuadratureFun(current_t, x_, self.rhoh))
+            
+            line1.set_data(x_, initial_y_rhohex)
+            line2.set_data(x_, current_y_rhohex)
+            line4.set_data(x_, current_y_rhoh)
+
+            error_line.set_data(x_, abs(current_y_rhohex - current_y_rhoh))
+
+            ax1.set_title(f'Time $t = {current_t:.3f}$')
+            #ax2.set_title(f'Error at Time $t = {current_t:.3f}$')
+
+            return line1, line2, line4, error_line
+
+        # Create and keep animation alive
+        ani = animation.FuncAnimation(fig, anim, frames=len(t_), interval=200, blit=True, repeat=False)
+        plt.show()
+
+    def snapshots(self, fig, ax):
+        if self.dim != 1:
+            raise NotImplementedError
+
+        t_ = self.getXIntPoints()
+        x_ = self.getYIntPoints()
+
+        t_start = t_[0]
+        t_middle = t_[len(t_) // 3]
+        t_end = t_[-1]
+        print(t_start, t_middle, t_end)
+
+        y_rhohex_start = self.evaluateQuadratureFun(t_start, x_, self.rhohex)
+        y_rhoh_start = self.evaluateQuadratureFun(t_start, x_, self.rhoh)
+
+        y_rhohex_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhohex)
+        y_rhoh_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhoh)
+
+        y_rhohex_end = self.evaluateQuadratureFun(t_end, x_, self.rhohex)
+        y_rhoh_end = self.evaluateQuadratureFun(t_end, x_, self.rhoh)
+
+
+        ax.plot(x_, y_rhohex_start, '--k', label=r'Initial Condition')
+        ax.plot(x_, y_rhohex_middle, '--b', label=r'Mid Exact Solution')
+        ax.plot(x_, y_rhoh_middle, '-b', label=r'Mid Numerical Solution')
+        ax.plot(x_, y_rhohex_end, '--r', label=r'Final Exact Solution')
+        ax.plot(x_, y_rhoh_end, '-r', label=r'Exact solution at $t=4.0$')
+
+        ax.set_xlim(min(x_), max(x_))
+        ax.set_ylim(0, 1.05)
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(r'$\rho(x)$')
+        #ax.legend(loc="upper left")
+
+        ax.set_title(r'Snapshots at $t = {:.3f}, {:.3f}, {:.3f}$'.format(
+            t_start, t_middle, t_end))
+        filename = "alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+        fig.savefig(filename + ".pdf", dpi=300,bbox_inches='tight')
+        plt.show()
+
+    def plotErr(self, axs, label, color):
+        x_ = [i*self.printNum for i in range(1,len(self.pdhgErr)+1)]
+        for ax in axs:
+            ax.set_xlabel("Iteration count")
+        axs[0].set_ylabel("PDHG Error")
+        axs[1].set_ylabel(r"Solution Error")
+        axs[0].semilogy(x_, self.pdhgErr, "-", label = label, color = color)
+        axs[1].semilogy(x_, self.stErr, "-", label = label, color = color)
+        axs[1].semilogy(x_, self.terminalErr, "--", label = label, color = color)
+        plt.show()
+
+    def saveVTK(self, filename):
+        gfu = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu2 = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu.Set(self.rhoh)
+        gfu2.Set(self.rhohex)
+        vtk = VTKOutput(
+            self.mesh, 
+            coefs = [gfu, gfu2], 
+            names = ["rho", "rhoex"], 
+            filename = filename, subdivision = 4)
+        vtk.Do()
+
+    def getXIntPoints(self):
+        # Return a list of time quadrature points
+        if self.dim != 1: raise NotImplementedError
+        X = IntegrationRuleSpaceSurface(self.mesh, order = self.order - 1, definedon = self.mesh.Boundaries("bottom"))
+        int_points = X.GetIntegrationRules()[ET.SEGM].points
+        points = set()
+        for el in self.mesh.Elements():
+            trafo = self.mesh.GetTrafo(el)
+            for p in int_points:
+                points.add(trafo(p[0],0).point[0])
+        points = list(points)
+        points.sort()
+        return points
+
+    def getYIntPoints(self):
+        # returns a list of space quadrature points
+        if self.dim != 1: raise NotImplementedError
+        int_points = self.M.GetIntegrationRules()[ET.SEGM].points
+        points = set()
+        for el in self.mesh.Elements():
+            trafo = self.mesh.GetTrafo(el)
+            for p in int_points:
+                points.add(trafo(0,p[0]).point[1])
+        points = list(points)
+        points.sort()
+        return points
+    
+    def evaluateQuadratureFun(self, t, xvals, qfu):
+        # Evaluates a quadrature function on (t, xvals) for scalar t and array xvals
+        if self.dim != 1: raise NotImplementedError
+        yvals = []
+        gfu = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu.Interpolate(qfu)
+        for p in xvals:
+            yvals.append(gfu(self.mesh(t, p)))
+        return yvals
+    
 
 

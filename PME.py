@@ -10,6 +10,7 @@ from ngsolve.meshes import MakeStructured2DMesh, MakeStructured3DMesh
 import numpy as np
 import brent_minima as brent
 
+
 """
 Compile brent_minima as:
 
