@@ -97,11 +97,11 @@ class PME1D(PME):
     
     
 class PME2D(PME):
-    dim           = 2
-    dirichlet_BCs = "top|bottom|left|right"
-    initialB      = "back"
-    terminalB     = "front"
-    solver        = "newton"
+    dim             = 2
+    dirichlet_BCs   = "top|bottom|left|right"
+    initialB        = "back"
+    terminalB       = "front"
+    nonLinearSolver = "newton"
 
     def __init__(
         self,

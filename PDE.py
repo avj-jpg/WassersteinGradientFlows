@@ -282,7 +282,7 @@ class PDE(abc.ABC):
         gfu.Set(rho)
         Draw(gfu)
 
-    def animate(self, fig, ax, save=False):
+    def animate(self, fig, ax, save=True, color='r'):
         if self.dim != 1: raise NotImplementedError
 
         t_ = self.getXIntPoints()
@@ -290,15 +290,23 @@ class PDE(abc.ABC):
 
         
         line1, = ax.plot([], [], '--k', label=r'Initial condition')
-        line2, = ax.plot([], [], '--r', label=r'Exact solution')
-        #line3, = ax.plot([], [], '-k', label='rhoh at t_[0]')
-        line4, = ax.plot([], [], '-r', label=r'Numerical solution')
+        line2, = ax.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
+        #line3, = ax.plot([], [], '-k', label='')
+        line4, = ax.plot([], [], '-', label=r'Numerical solution', color=color)
 
         ax.set_xlim(min(x_), max(x_))
         ax.set_ylim(0,1.05)
         ax.set_xlabel(r'$x$')
         ax.set_ylabel(r'$\rho(x)$')
-        ax.legend(loc = "upper left")
+        #ax.legend(loc = "upper left")
+
+        fig.subplots_adjust(bottom=0.2)  
+        ax.legend(
+            loc='upper center', 
+            bbox_to_anchor=(0.5, -0.15), 
+            ncol=3, 
+            frameon=False
+        )
         
 
         initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
@@ -326,7 +334,7 @@ class PDE(abc.ABC):
             filename = "alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
             ani.save(filename + ".gif", writer='pillow', fps=20)
 
-    def animateWithErr(self, fig, ax):
+    def animateWithErr(self, fig, ax, save="True", color='r'):
         if self.dim != 1: raise NotImplementedError
         if len(ax) !=2: raise Exception("Length of ax must be two.")
 
@@ -335,20 +343,27 @@ class PDE(abc.ABC):
 
         ax1, ax2 = ax[0], ax[1]
         line1, = ax1.plot([], [], '--k', label=r'Initial condition')
-        line2, = ax1.plot([], [], '--r', label=r'Exact solution')
-        line4, = ax1.plot([], [], '-r', label=r'Numerical solution')
+        line2, = ax1.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
+        line4, = ax1.plot([], [], '-', label=r'Numerical solution', color=color)
 
         ax1.set_xlim(min(x_), max(x_))
-        ax1.set_ylim(0, 1)
+        ax1.set_ylim(0,1.05)
         ax1.set_xlabel(r'$x$')
         ax1.set_ylabel(r'$\rho(x)$')
-        ax1.legend(loc="upper left")
+        fig.subplots_adjust(bottom=0.2)  
+        ax[0].legend(
+            loc='upper center', 
+            bbox_to_anchor=(1.2, -0.15), 
+            ncol=3, 
+            frameon=False
+        )
 
-        error_line, = ax2.semilogy([], [], '-b', label=r'Error (Exact - Numerical)')
+
+        error_line, = ax2.semilogy([], [], '-k', label=r'Absolute error')
         ax2.set_xlim(min(x_), max(x_))
         ax2.set_ylim(1e-8, 1)  
         ax2.set_xlabel(r'$x$')
-        ax2.set_ylabel(r'Error')
+        ax2.set_ylabel(r'Absolute Error')
 
         initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
 
@@ -369,10 +384,13 @@ class PDE(abc.ABC):
             return line1, line2, line4, error_line
 
         # Create and keep animation alive
-        ani = animation.FuncAnimation(fig, anim, frames=len(t_), interval=200, blit=True, repeat=False)
+        ani = animation.FuncAnimation(fig, anim, frames=len(t_), interval=25, blit=True, repeat=False)
         plt.show()
-
-    def snapshots(self, fig, ax):
+        if save:
+            filename = "Err_alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+            ani.save(filename + ".gif", writer='pillow', fps=20)
+            
+    def snapshots(self, fig, ax, color='r'):
         if self.dim != 1:
             raise NotImplementedError
 
@@ -393,12 +411,13 @@ class PDE(abc.ABC):
         y_rhohex_end = self.evaluateQuadratureFun(t_end, x_, self.rhohex)
         y_rhoh_end = self.evaluateQuadratureFun(t_end, x_, self.rhoh)
 
-
-        ax.plot(x_, y_rhohex_start, '--k', label=r'Initial Condition')
-        ax.plot(x_, y_rhohex_middle, '--b', label=r'Mid Exact Solution')
-        ax.plot(x_, y_rhoh_middle, '-b', label=r'Mid Numerical Solution')
-        ax.plot(x_, y_rhohex_end, '--r', label=r'Final Exact Solution')
-        ax.plot(x_, y_rhoh_end, '-r', label=r'Exact solution at $t=4.0$')
+        ax.plot(x_, y_rhoh_start, '-', color=color )
+        ax.plot(x_, y_rhoh_middle, '-', color=color)
+        ax.plot(x_, y_rhoh_end, '-', color=color)
+        ax.plot(x_, y_rhohex_start, ':k', linewidth=3)
+        ax.plot(x_, y_rhohex_middle, ':k', linewidth=3)
+        ax.plot(x_, y_rhohex_end, ':k', linewidth=3)
+        
 
         ax.set_xlim(min(x_), max(x_))
         ax.set_ylim(0, 1.05)
@@ -415,13 +434,12 @@ class PDE(abc.ABC):
     def plotErr(self, axs, label, color):
         x_ = [i*self.printNum for i in range(1,len(self.pdhgErr)+1)]
         for ax in axs:
-            ax.set_xlabel("Iteration count")
+            ax.set_xlabel("PDHG iteration")
         axs[0].set_ylabel("PDHG Error")
         axs[1].set_ylabel(r"Solution Error")
         axs[0].semilogy(x_, self.pdhgErr, "-", label = label, color = color)
-        axs[1].semilogy(x_, self.stErr, "-", label = label, color = color)
-        axs[1].semilogy(x_, self.terminalErr, "--", label = label, color = color)
-        plt.show()
+        axs[1].semilogy(x_, self.stErr, "--", label = label, color = color)
+        axs[1].semilogy(x_, self.terminalErr, ":", label = label, color = color)
 
     def saveVTK(self, filename):
         gfu = GridFunction(L2(self.mesh, order=self.order-1))
