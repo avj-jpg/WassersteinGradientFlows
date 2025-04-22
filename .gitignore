@@ -1,3 +1,9 @@
 brent_minima.cpython-312-x86_64-linux-gnu.so
 *.vtu
 *.pyc
+*.gif
+*.pdf
+*.png
+FokkerPlanck.*
+alpha_2_order_4_nx_32_ny_32.pdf
+alpha_2_order_4_nx_32_ny_32.gif

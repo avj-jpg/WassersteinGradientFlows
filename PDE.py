@@ -18,7 +18,7 @@ class PDE(abc.ABC):
     dirichlet_BCs   = NotImplemented
     initialB        = NotImplemented
     terminalB       = NotImplemented
-    nonLinearSolver = NotImplemented
+    #nonLinearSolver = NotImplemented
 
     def __init__(
             self,
@@ -26,15 +26,19 @@ class PDE(abc.ABC):
             C:        int,
             beta:   float,
             printNum: int,
-            maxIter:  int
+            maxIter:  int,
+            nonLinearSolver: str
     ):
         
-        if self.nonLinearSolver not in ["newton", "brent"]:
+
+        if nonLinearSolver not in ["newton", "brent"]:
             raise Exception("Nonlinear solver must be 'newton' or 'brent'.")
         
-        if self.nonLinearSolver == "brent" and self.dim != 1:
-            raise Exception("Brent method is current only available for dim = 1.")
+        # if nonLinearSolver == "brent" and self.dim != 1:
+        #     raise Exception("Brent method is current only available for dim = 1.")
             
+
+        self.nonLinearSolver = nonLinearSolver    
         self.pdhgErr     = []
         self.stErr       = []
         self.terminalErr = []
@@ -48,7 +52,11 @@ class PDE(abc.ABC):
         self.fes   = self.V * self.V0 if self.dim == 1 else self.V * self.V0 * self.V0
         self.W     = IntegrationRuleSpace(self.mesh, order = self.order - 1)
         self.W_Vec = self.W ** self.dim
-        self.M     = IntegrationRuleSpaceSurface(self.mesh, order = self.order - 1, definedon = self.mesh.Boundaries(self.terminalB))
+        self.M     = IntegrationRuleSpaceSurface(
+                        self.mesh, 
+                        order = self.order - 1, 
+                        definedon = self.mesh.Boundaries(self.terminalB)
+                    )
 
         self.rho = self.W.TrialFunction()
 
@@ -77,9 +85,15 @@ class PDE(abc.ABC):
         self.rhoT = self.M.TrialFunction()
 
         self.rhoh.Set (self.initial_guess())
-        self.rhoTh.Set(self.initial_guess(), definedon=self.mesh.Boundaries(self.terminalB))
+        self.rhoTh.Set(
+            self.initial_guess(), 
+            definedon=self.mesh.Boundaries(self.terminalB)
+        )
         self.rhohex.Interpolate (self.rho_exact())
-        self.rhoThex.Interpolate(self.rho_exact(), definedon=self.mesh.Boundaries(self.terminalB))
+        self.rhoThex.Interpolate(
+            self.rho_exact(), 
+            definedon=self.mesh.Boundaries(self.terminalB)
+        )
 
         self.a = BilinearForm(self.fes)
         self.b = BilinearForm(self.W)
@@ -132,7 +146,7 @@ class PDE(abc.ABC):
 
         if self.nonLinearSolver == 'newton':
             self.b += Variation(
-                (     self.mh01 ** 2 / (1 + self.V1(self.rho))       
+                (   self.mh01 ** 2 / (1 + self.V1(self.rho))       
                 +  (self.mh02 ** 2 / (1 + self.V1(self.rho))  if self.dim == 2 else 0 )
                 +   self.nh01 ** 2 / (1 + self.V3(self.rho,))
                 +  (self.nh02 ** 2 / (1 + self.V3(self.rho,)) if self.dim == 2 else 0 )
@@ -208,7 +222,7 @@ class PDE(abc.ABC):
     
 
 # Solver ---------------------------------------------------------------
-    def timestep(self):
+    def PDHGstep(self):
         # Step 1: solve for Lagrange multipliers
         self.f.Assemble()
         ## solve for (dphi, dsigma) and add
@@ -233,14 +247,17 @@ class PDE(abc.ABC):
         if self.nonLinearSolver == "newton":
             solvers.Newton(self.b, self.rhoh, printing=False) 
         else: 
-            self.rhoh.vec.FV().NumPy()[:] = self.solveRho(self.mh01, self.sh0, self.nh01, self.rhoh0)
+            if self.dim == 1: 
+                self.rhoh.vec.FV().NumPy()[:] = self.solveRho(self.mh01, self.sh0, self.nh01, self.rhoh0)
+            else:
+                self.rhoh.vec.FV().NumPy()[:] = self.solveRho((self.mh01, self.mh02), self.sh0, (self.nh01, self.nh02), self.rhoh0)
 
         ### Update mh, nh, sh
-        self.mh1.Interpolate(self.V1(self.rhoh) * self.mh01 / ( 1 + self.V1(self.rhoh) ) )
+        self.mh1.Interpolate(self.V1(self.rhoh) * self.mh01 / ( 1 + self.V1(self.rhoh)))
         if self.dim == 2: self.mh2.Interpolate(self.V1(self.rhoh) * self.mh02 / (1 + self.V1(self.rhoh)) )
         self.nh1.Interpolate(self.V3(self.rhoh) * self.nh01 / (1 + self.V3(self.rhoh)))
         if self.dim == 2: self.nh2.Interpolate(self.V3(self.rhoh) * self.nh02 / (1 + self.V3(self.rhoh)))
-        if self.C > 0: self.sh.Interpolate(self.V2(self.rhoh,self.C)*self.sh0 / (1 + self.V2(self.rhoh,self.C))) 
+        if self.C > 0: self.sh.Interpolate(self.V2(self.rhoh,self.C)*self.sh0 / (1 + self.V2(self.rhoh, self.C))) 
 
         ## solve for rhoT
         # self.rhoTh0.Interpolate(self.rhoTh - self.phih0, definedon=self.mesh.Boundaries(self.terminalB))
@@ -261,7 +278,7 @@ class PDE(abc.ABC):
     def solve(self):
         with TaskManager():
             for i in range(1,self.maxIter+1):
-                self.timestep()
+                self.PDHGstep()
                 if ( i % self.printNum)==0:
                     self.err = max(max(self.drhoTh), -min(self.drhoTh))
                     self.pdhgErr.append(self.err)
@@ -282,155 +299,7 @@ class PDE(abc.ABC):
         gfu.Set(rho)
         Draw(gfu)
 
-    def animate(self, fig, ax, save=True, color='r'):
-        if self.dim != 1: raise NotImplementedError
-
-        t_ = self.getXIntPoints()
-        x_ = self.getYIntPoints()
-
-        
-        line1, = ax.plot([], [], '--k', label=r'Initial condition')
-        line2, = ax.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
-        #line3, = ax.plot([], [], '-k', label='')
-        line4, = ax.plot([], [], '-', label=r'Numerical solution', color=color)
-
-        ax.set_xlim(min(x_), max(x_))
-        ax.set_ylim(0,1.05)
-        ax.set_xlabel(r'$x$')
-        ax.set_ylabel(r'$\rho(x)$')
-        #ax.legend(loc = "upper left")
-
-        fig.subplots_adjust(bottom=0.2)  
-        ax.legend(
-            loc='upper center', 
-            bbox_to_anchor=(0.5, -0.15), 
-            ncol=3, 
-            frameon=False
-        )
-        
-
-        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
-        #initial_y_rhoh = self.evaluateQuadratureFun(t_[0], x_, self.rhoh)
-        
-        def anim(i):
-            current_t = t_[i]
-            current_y_rhohex = self.evaluateQuadratureFun(current_t, x_, self.rhohex)
-            current_y_rhoh = self.evaluateQuadratureFun(current_t, x_, self.rhoh)
-            
-            line1.set_data(x_, initial_y_rhohex)
-            line2.set_data(x_, current_y_rhohex)
-            #line3.set_data(x_, initial_y_rhoh)
-            line4.set_data(x_, current_y_rhoh)
-
-            ax.set_title(r'Time $t = $'+ "{:.3f}".format(current_t))
-            return line1, line2, line4
-
-        ani = animation.FuncAnimation(
-            fig, anim, frames=len(t_), interval=25, blit=True, repeat=False
-        )
-
-        plt.show()
-        if save:
-            filename = "alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
-            ani.save(filename + ".gif", writer='pillow', fps=20)
-
-    def animateWithErr(self, fig, ax, save="True", color='r'):
-        if self.dim != 1: raise NotImplementedError
-        if len(ax) !=2: raise Exception("Length of ax must be two.")
-
-        t_ = self.getXIntPoints()
-        x_ = self.getYIntPoints()
-
-        ax1, ax2 = ax[0], ax[1]
-        line1, = ax1.plot([], [], '--k', label=r'Initial condition')
-        line2, = ax1.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
-        line4, = ax1.plot([], [], '-', label=r'Numerical solution', color=color)
-
-        ax1.set_xlim(min(x_), max(x_))
-        ax1.set_ylim(0,1.05)
-        ax1.set_xlabel(r'$x$')
-        ax1.set_ylabel(r'$\rho(x)$')
-        fig.subplots_adjust(bottom=0.2)  
-        ax[0].legend(
-            loc='upper center', 
-            bbox_to_anchor=(1.2, -0.15), 
-            ncol=3, 
-            frameon=False
-        )
-
-
-        error_line, = ax2.semilogy([], [], '-k', label=r'Absolute error')
-        ax2.set_xlim(min(x_), max(x_))
-        ax2.set_ylim(1e-8, 1)  
-        ax2.set_xlabel(r'$x$')
-        ax2.set_ylabel(r'Absolute Error')
-
-        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
-
-        def anim(i):
-            current_t = t_[i]
-            current_y_rhohex = np.array(self.evaluateQuadratureFun(current_t, x_, self.rhohex))
-            current_y_rhoh = np.array(self.evaluateQuadratureFun(current_t, x_, self.rhoh))
-            
-            line1.set_data(x_, initial_y_rhohex)
-            line2.set_data(x_, current_y_rhohex)
-            line4.set_data(x_, current_y_rhoh)
-
-            error_line.set_data(x_, abs(current_y_rhohex - current_y_rhoh))
-
-            ax1.set_title(f'Time $t = {current_t:.3f}$')
-            #ax2.set_title(f'Error at Time $t = {current_t:.3f}$')
-
-            return line1, line2, line4, error_line
-
-        # Create and keep animation alive
-        ani = animation.FuncAnimation(fig, anim, frames=len(t_), interval=25, blit=True, repeat=False)
-        plt.show()
-        if save:
-            filename = "Err_alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
-            ani.save(filename + ".gif", writer='pillow', fps=20)
-            
-    def snapshots(self, fig, ax, color='r'):
-        if self.dim != 1:
-            raise NotImplementedError
-
-        t_ = self.getXIntPoints()
-        x_ = self.getYIntPoints()
-
-        t_start = t_[0]
-        t_middle = t_[len(t_) // 3]
-        t_end = t_[-1]
-        print(t_start, t_middle, t_end)
-
-        y_rhohex_start = self.evaluateQuadratureFun(t_start, x_, self.rhohex)
-        y_rhoh_start = self.evaluateQuadratureFun(t_start, x_, self.rhoh)
-
-        y_rhohex_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhohex)
-        y_rhoh_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhoh)
-
-        y_rhohex_end = self.evaluateQuadratureFun(t_end, x_, self.rhohex)
-        y_rhoh_end = self.evaluateQuadratureFun(t_end, x_, self.rhoh)
-
-        ax.plot(x_, y_rhoh_start, '-', color=color )
-        ax.plot(x_, y_rhoh_middle, '-', color=color)
-        ax.plot(x_, y_rhoh_end, '-', color=color)
-        ax.plot(x_, y_rhohex_start, ':k', linewidth=3)
-        ax.plot(x_, y_rhohex_middle, ':k', linewidth=3)
-        ax.plot(x_, y_rhohex_end, ':k', linewidth=3)
-        
-
-        ax.set_xlim(min(x_), max(x_))
-        ax.set_ylim(0, 1.05)
-        ax.set_xlabel(r'$x$')
-        ax.set_ylabel(r'$\rho(x)$')
-        #ax.legend(loc="upper left")
-
-        ax.set_title(r'Snapshots at $t = {:.3f}, {:.3f}, {:.3f}$'.format(
-            t_start, t_middle, t_end))
-        filename = "alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
-        fig.savefig(filename + ".pdf", dpi=300,bbox_inches='tight')
-        plt.show()
-
+    
     def plotErr(self, axs, label, color):
         x_ = [i*self.printNum for i in range(1,len(self.pdhgErr)+1)]
         for ax in axs:
@@ -453,9 +322,9 @@ class PDE(abc.ABC):
             filename = filename, subdivision = 4)
         vtk.Do()
 
-    def getXIntPoints(self):
+    def getTimeIntPoints(self):
         # Return a list of time quadrature points
-        if self.dim != 1: raise NotImplementedError
+        #if self.dim != 1: raise NotImplementedError
         X = IntegrationRuleSpaceSurface(self.mesh, order = self.order - 1, definedon = self.mesh.Boundaries("bottom"))
         int_points = X.GetIntegrationRules()[ET.SEGM].points
         points = set()
@@ -465,11 +334,13 @@ class PDE(abc.ABC):
                 points.add(trafo(p[0],0).point[0])
         points = list(points)
         points.sort()
-        return points
+        return points 
+        
 
-    def getYIntPoints(self):
-        # returns a list of space quadrature points
+    def getSpaceIntPoints(self):
+        # returns an array of space quadrature points
         if self.dim != 1: raise NotImplementedError
+            
         int_points = self.M.GetIntegrationRules()[ET.SEGM].points
         points = set()
         for el in self.mesh.Elements():

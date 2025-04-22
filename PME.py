@@ -9,6 +9,7 @@ from ngsolve import *
 from ngsolve.meshes import MakeStructured2DMesh, MakeStructured3DMesh
 import numpy as np
 import brent_minima as brent
+import matplotlib.pyplot as plt
 
 
 """
@@ -22,17 +23,14 @@ c++ -O3 -Wall -shared -std=c++14 -fPIC \
 
 class PME(PDE):
 
-    #alpha = NotImplemented
-
     def V1(self, rho): 
         return rho
 
     def V2(self, rho, C):
-        v   = -(self.alpha - 1) / (self.alpha * self.beta) * rho ** (1 - self.alpha)
-        rm  = self.rho_exact()** self.alpha
-        _v  = self.rho_exact().Diff(x) - self.beta * rm.Diff(y).Diff(y) 
+        v = 1 / self.beta / self.dE(rho)
+        _v  = -self.rho_exact().Diff(x) + self.beta * (self.rho_exact() ** self.alpha).Diff(y).Diff(y) 
         if self.dim == 2:
-            _v += - self.beta * rm.Diff(z).Diff(z)
+            _v += + self.beta * (self.rho_exact() ** self.alpha).Diff(z).Diff(z) 
         v *= _v
         return v
     
@@ -48,7 +46,57 @@ class PME(PDE):
     def d2E(self, rho):
         return rho ** (self.alpha - 2) * self.alpha
     
+    def solveRho(self, m, s, n, rhoBar):
+        s_flat = s.vec.FV().NumPy()[:] ** 2
+        rho_bar_flat = rhoBar.vec.FV().NumPy()[:]
+
+        if self.dim == 1:
+            m_flat = m.vec.FV().NumPy()[:] ** 2
+            n_flat = n.vec.FV().NumPy()[:] ** 2
+        else:
+            m_flat = m[0].vec.FV().NumPy()[:] ** 2 + m[1].vec.FV().NumPy()[:] ** 2
+            n_flat = n[0].vec.FV().NumPy()[:] ** 2 + n[1].vec.FV().NumPy()[:] ** 2
+
+        def V1(r): return r
+        def V2(r, idx): 
+            return self.rhoMfdRes_flat[idx] / self.beta / self.dE(r)
+        def V3(r):  return 1 / V1(r) / d2E(r) ** 2
+
+        def dE(r): return r ** (self.alpha - 1) * self.alpha / (self.alpha - 1)
+        def d2E(r): return r ** (self.alpha - 2) * self.alpha
+        
+
+        def F(rho, rhobar, mbar2, nbar2, sbar2, idx):
+            return (
+                0.5 * (rho - rhobar) ** 2   +
+                0.5 * mbar2 / (1 + V1(rho)) +
+                0.5 * nbar2 / (1 + V3(rho)) +
+                0.5 * sbar2 / (1 + V2(rho, idx)) +
+                0.5 * self.beta ** 2 * V2(rho, idx) * dE(rho) * dE(rho)
+            )
+
+        rho = brent.solve_rho(F, m_flat, s_flat, n_flat, rho_bar_flat, self.brentMin, self.brentMax)
+        return rho
     
+    def __str__(self):
+        """String representation."""
+        return "\n".join(
+            [
+                f"Porous Medium Equation",
+                f"  C: {self.C}",
+                f"  alpha: {self.alpha}",
+                f"  beta: {self.beta}",
+                f"  Time domain: [0, {self.xmax}]",
+                f"  Spatial domain: [0, {self.ymax}]" + (f" x [0, {self.zmax}]" if self.dim == 2 else ""),
+                f"  Discretization size: {self.nx} x {self.ny}" + (f" x {self.nz}" if self.dim == 2 else ""),
+                f"  Order: {self.order}",
+                f"  Degrees of freedom (primal space):  {self.W.ndof}",
+                f"  Degrees of freedom (dual space):  {self.V.ndof}",
+                f"  Non-linear solver: {self.nonLinearSolver}" + (
+                f", with interval: [{self.brentMin}, {self.brentMax}]" if self.nonLinearSolver == 'brent' else ""),
+                f"  PDHG iterations: {self.maxIter - 1}"
+            ]
+        )  
 
 
 class PME1D(PME):
@@ -57,7 +105,6 @@ class PME1D(PME):
     dirichlet_BCs         = "top|bottom"
     initialB              = "left"
     terminalB             = "right"
-    nonLinearSolver       = "newton"
     
     def __init__(
         self,
@@ -71,15 +118,27 @@ class PME1D(PME):
         ymax:     int = 1,
         nx:       int = 16,
         ny:       int = 16,
+        nonLinearSolver: str = "brent",
+        brentMin: float = 0.8,
+        brentMax: float = 2.2
     ):
         
         self.alpha = alpha
         self.nx, self.ny = nx, ny
         self.xmax, self.ymax = xmax, ymax
+        if nonLinearSolver == "brent":
+            self.brentMin, self.brentMax = brentMin, brentMax
 
-        super().__init__(order, C, beta, printNum, maxIter)
-        # C not utilized
-        
+        # C must be > 0
+        super().__init__(order, C, beta, printNum, maxIter, nonLinearSolver)
+
+        # Residual of the exact manufactured solution
+        self.rhoMfdRes = GridFunction(self.W)
+        rm  = -self.rho_exact().Diff(x) + self.beta * (self.rho_exact() ** self.alpha).Diff(y).Diff(y) 
+        self.rhoMfdRes.Interpolate(rm)
+        self.rhoMfdRes_flat = self.rhoMfdRes.vec.FV().NumPy()[:]
+
+    
 
     # Implement abstract methods ----------------------------------------------
     def create_mesh(self):
@@ -89,19 +148,14 @@ class PME1D(PME):
         return (2 - x) + 0.1 * exp(-0.1 * x) * cos(2 * pi * y)
     
     def initial_guess(self):
-        return (2 - x) + 0.1 * exp(-0.1 * 0) * cos(2 * pi * y) 
+        return (2 - 0) + 0.1 * exp(-0.1 * 0) * cos(2 * pi * y) 
     
-    def solveRho(self, m, s, n, rhoBar):
-        # Not utilized.
-        return 0
-    
-    
+ 
 class PME2D(PME):
     dim             = 2
     dirichlet_BCs   = "top|bottom|left|right"
     initialB        = "back"
     terminalB       = "front"
-    nonLinearSolver = "newton"
 
     def __init__(
         self,
@@ -116,14 +170,19 @@ class PME2D(PME):
         zmax:     int = 1,
         nx:       int = 8,
         ny:       int = 8,
-        nz:       int = 8
+        nz:       int = 8,
+        nonLinearSolver: str = "brent",
+        brentMin: float = 0.8,
+        brentMax: float = 2.2
     ):
         
         self.alpha = alpha
         self.nx, self.ny, self.nz = nx, ny, nz
         self.xmax, self.ymax, self.zmax = xmax, ymax, zmax
+        if nonLinearSolver == "brent":
+            self.brentMin, self.brentMax = brentMin, brentMax
 
-        super().__init__(order, C, beta, printNum, maxIter)
+        super().__init__(order, C, beta, printNum, maxIter, nonLinearSolver)
         # C not utilized
 
 
@@ -138,11 +197,8 @@ class PME2D(PME):
         return (2 - x) + 0.1 * exp(-0.1 * x) * cos(2 * pi * y) * cos(2 * pi * z) 
     
     def initial_guess(self):
-        return (2 - x) + 0.1 * exp(-0.1 * 0) * cos(2 * pi * y) * cos(2 * pi * z) 
-    
-    def solveRho(self, m, s, n, rhoBar):
-        # Not utilized.
-        return 0
+        return (2 - 0) + 0.1 * exp(-0.1 * 0) * cos(2 * pi * y) * cos(2 * pi * z) 
+
 
 class PME1DBB(PDE):
 
@@ -150,8 +206,6 @@ class PME1DBB(PDE):
     dirichlet_BCs = "top|bottom"
     initialB      = "left"
     terminalB     = "right"
-    nonLinearSolver = "brent"
-    
     
     def __init__(
         self,
@@ -165,7 +219,10 @@ class PME1DBB(PDE):
         ymax:     int = 1,
         nx:       int = 16,
         ny:       int = 16,
-        sc: float = 0.1
+        sc: float = 0.1,
+        nonLinearSolver: str = "brent",
+        brentMin: float = 1e-15,
+        brentMax: float = 2
     ):
         
         
@@ -173,13 +230,16 @@ class PME1DBB(PDE):
         self.alpha = alpha
         self.nx, self.ny = nx, ny
         self.xmax, self.ymax = xmax, ymax
-        self.k = 1/(self.alpha-1+2/self.dim)
-        self.s0 = self.sc*self.k*(self.alpha-1)/2/self.dim/self.alpha
+        if nonLinearSolver == "brent":
+            self.brentMin, self.brentMax = brentMin, brentMax
+
+        self.k = 1 / (self.alpha - 1 + 2 / self.dim)
+        self.s0 = self.sc * self.k * (self.alpha - 1) / 2 / self.dim / self.alpha
 
         if C != 0: raise Exception("C must be 0 for Barenblatt data.")
         if self.alpha < 2: raise Exception("alpha must >= 2.")
 
-        super().__init__(order, C, beta, printNum, maxIter)
+        super().__init__(order, C, beta, printNum, maxIter, nonLinearSolver)
         
 
     # Implement abstract methods ----------------------------------------------
@@ -187,18 +247,18 @@ class PME1DBB(PDE):
         return MakeStructured2DMesh(nx = self.nx, ny = self.ny, mapping = lambda x, y : (self.xmax * x, self.ymax * y))
     
     def rho_exact(self):
-        r2 = (y-0.5)**2 if self.dim == 1 else (y-0.5)**2 + (z-0.5)**2
+        r2 = (y - 0.5) ** 2 if self.dim == 1 else (y - 0.5) ** 2 + (z - 0.5) ** 2
 
-        val = 1-r2/self.sc/(self.beta*x+1) ** (2*self.k/self.dim) 
-        return (self.beta*x+1)**(-self.k)*IfPos(val, val**(1/(self.alpha-1)), 0)
+        val = 1 - r2 / self.sc / (self.beta * x + 1) ** (2 * self.k / self.dim) 
+        return (self.beta * x + 1) ** (-self.k) * IfPos(val, val ** (1 / (self.alpha - 1)), 0)
     
     def initial_guess(self):
-        r2 = (y-0.5)**2 if self.dim == 1 else (y-0.5)**2 + (z-0.5)**2
-        val = 1-r2/self.sc/(self.beta*0+1) ** (2*self.k/self.dim) 
-        return (self.beta*0+1)**(-self.k)*IfPos(val, val**(1/(self.alpha-1)), 0)
+        r2 = (y - 0.5) ** 2 if self.dim == 1 else (y - 0.5) ** 2 + (z - 0.5) ** 2
+        val = 1 - r2 / self.sc / (self.beta * 0 + 1) ** (2 * self.k / self.dim) 
+        return (self.beta * 0 + 1) ** (-self.k) * IfPos(val, val ** (1 / (self.alpha - 1)), 0)
     
     def V1(self, rho): 
-        return self.s0*rho
+        return self.s0 * rho
 
     def V2(self, rho, C):
         return 0
@@ -216,54 +276,278 @@ class PME1DBB(PDE):
         return rho ** (self.alpha - 2) * self.alpha
     
     def solveRho(self, m, s, n, rhoBar):
-        m_flat = m.vec.FV().NumPy()[:]
-        s_flat = 0*s.vec.FV().NumPy()[:]
-        n_flat = n.vec.FV().NumPy()[:]
+        m_flat = m.vec.FV().NumPy()[:] ** 2
+        s_flat = 0 * s.vec.FV().NumPy()[:] 
+        n_flat = n.vec.FV().NumPy()[:] ** 2
         rho_bar_flat = rhoBar.vec.FV().NumPy()[:]
 
-        # def V1(r): 
-        #     return r
-        # def V2(x): 
-        #     if x < 0: return 0
-        #     if (x-1) ** 2 - 1e-12 >= 0: return self.C  * (x - 1) / np.log(x)
-        #     else: return self.C * x
-        # def dE(x): 
-        #     if x <= 0: return 1e12
-        #     return np.log(x)
-        # def d2E(x): return 1 / x
-        # def V3(x): return 1 / x / d2E(x) ** 2
+        def V1(r): return self.s0*r
+        def V2(r): return 0
+        def V3(r): return 1 / V1(r) / d2E(r) ** 2
 
-        def V1(r): 
-            return self.s0*r
         def dE(r): return r ** (self.alpha - 1) * self.alpha / (self.alpha - 1)
-
         def d2E(r): return r ** (self.alpha - 2) * self.alpha
 
+        def F(rho, rhobar, mbar2, nbar2, sbar2, *args):
+            return (  0.5 * (rho - rhobar) ** 2 
+                    + 0.5 * mbar2 / (1 + V1(rho)) 
+                    + 0.5 * nbar2 / (1 + V3(rho)) 
+                    + 0.5 * sbar2 / (1 + V2(rho)) 
+            )
+                    #+ 0.5 * self.beta ** 2 * V2(rho) * dE(rho) * dE(rho) )
+        
+        rho = brent.solve_rho(F, m_flat, s_flat, n_flat, rho_bar_flat, 1e-15, 2.0) 
+  
+        return rho
+    
+    def animate(self, fig, ax, save=True, color='r'):
+        if self.dim != 1: raise NotImplementedError
+
+        t_ = self.getTimeIntPoints()
+        x_ = self.getSpaceIntPoints()
+
+        
+        line1, = ax.plot([], [], '--k', label=r'Initial condition')
+        line2, = ax.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
+        #line3, = ax.plot([], [], '-k', label='')
+        line4, = ax.plot([], [], '-', label=r'Numerical solution', color=color)
+
+        ax.set_xlim(min(x_), max(x_))
+        ax.set_ylim(0,1.05)
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(r'$\rho(x)$')
+        #ax.legend(loc = "upper left")
+
+        fig.subplots_adjust(bottom=0.2)  
+        ax.legend(
+            loc='upper center', 
+            bbox_to_anchor=(0.5, -0.15), 
+            ncol=3, 
+            frameon=False
+        )
+        
+
+        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
+        #initial_y_rhoh = self.evaluateQuadratureFun(t_[0], x_, self.rhoh)
+        
+        def anim(i):
+            current_t = t_[i]
+            current_y_rhohex = self.evaluateQuadratureFun(current_t, x_, self.rhohex)
+            current_y_rhoh = self.evaluateQuadratureFun(current_t, x_, self.rhoh)
+            
+            line1.set_data(x_, initial_y_rhohex)
+            line2.set_data(x_, current_y_rhohex)
+            #line3.set_data(x_, initial_y_rhoh)
+            line4.set_data(x_, current_y_rhoh)
+
+            ax.set_title(r'Time $t = $'+ "{:.3f}".format(current_t))
+            return line1, line2, line4
+
+        ani = animation.FuncAnimation(
+            fig, anim, frames=len(t_), interval=25, blit=True, repeat=False
+        )
+
+        plt.show()
+        if save:
+            filename = "alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+            ani.save(filename + ".gif", writer='pillow', fps=20)
+
+    def animateWithErr(self, fig, ax, save="True", color='r'):
+        if self.dim != 1: raise NotImplementedError
+        if len(ax) !=2: raise Exception("Length of ax must be two.")
+
+        t_ = self.getTimeIntPoints()
+        x_ = self.getSpaceIntPoints()
+
+        ax1, ax2 = ax[0], ax[1]
+        line1, = ax1.plot([], [], '--k', label=r'Initial condition')
+        line2, = ax1.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
+        line4, = ax1.plot([], [], '-', label=r'Numerical solution', color=color)
+
+        ax1.set_xlim(min(x_), max(x_))
+        ax1.set_ylim(0,1.05)
+        ax1.set_xlabel(r'$x$')
+        ax1.set_ylabel(r'$\rho(x)$')
+        fig.subplots_adjust(bottom=0.2)  
+        ax[0].legend(
+            loc='upper center', 
+            bbox_to_anchor=(1.2, -0.15), 
+            ncol=3, 
+            frameon=False
+        )
+
+
+        error_line, = ax2.semilogy([], [], '-k', label=r'Absolute error')
+        ax2.set_xlim(min(x_), max(x_))
+        ax2.set_ylim(1e-8, 1)  
+        ax2.set_xlabel(r'$x$')
+        ax2.set_ylabel(r'Absolute Error')
+
+        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
+
+        def anim(i):
+            current_t = t_[i]
+            current_y_rhohex = np.array(self.evaluateQuadratureFun(current_t, x_, self.rhohex))
+            current_y_rhoh = np.array(self.evaluateQuadratureFun(current_t, x_, self.rhoh))
+            
+            line1.set_data(x_, initial_y_rhohex)
+            line2.set_data(x_, current_y_rhohex)
+            line4.set_data(x_, current_y_rhoh)
+
+            error_line.set_data(x_, abs(current_y_rhohex - current_y_rhoh))
+
+            ax1.set_title(f'Time $t = {current_t:.3f}$')
+            #ax2.set_title(f'Error at Time $t = {current_t:.3f}$')
+
+            return line1, line2, line4, error_line
+
+        # Create and keep animation alive
+        ani = animation.FuncAnimation(fig, anim, frames=len(t_), interval=25, blit=True, repeat=False)
+        plt.show()
+        if save:
+            filename = "Err_alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+            ani.save(filename + ".gif", writer='pillow', fps=20)
+            
+    def snapshots(self, fig, ax, color='r'):
+        if self.dim != 1:
+            raise NotImplementedError
+
+        t_ = self.getTimeIntPoints()
+        x_ = self.getSpaceIntPoints()
+
+        t_start = t_[0]
+        t_middle = t_[len(t_) // 3]
+        t_end = t_[-1]
+        print(t_start, t_middle, t_end)
+
+        y_rhohex_start = self.evaluateQuadratureFun(t_start, x_, self.rhohex)
+        y_rhoh_start = self.evaluateQuadratureFun(t_start, x_, self.rhoh)
+
+        y_rhohex_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhohex)
+        y_rhoh_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhoh)
+
+        y_rhohex_end = self.evaluateQuadratureFun(t_end, x_, self.rhohex)
+        y_rhoh_end = self.evaluateQuadratureFun(t_end, x_, self.rhoh)
+
+        ax.plot(x_, y_rhoh_start, '-', color=color )
+        ax.plot(x_, y_rhoh_middle, '-', color=color)
+        ax.plot(x_, y_rhoh_end, '-', color=color)
+        ax.plot(x_, y_rhohex_start, ':k', linewidth=3)
+        ax.plot(x_, y_rhohex_middle, ':k', linewidth=3)
+        ax.plot(x_, y_rhohex_end, ':k', linewidth=3)
+        
+
+        ax.set_xlim(min(x_), max(x_))
+        ax.set_ylim(0, 1.05)
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(r'$\rho(x)$')
+        #ax.legend(loc="upper left")
+
+        ax.set_title(r'Snapshots at $t = {:.3f}, {:.3f}, {:.3f}$'.format(
+            t_start, t_middle, t_end))
+        filename = "1D_alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+        fig.savefig(filename + ".pdf", dpi=300,bbox_inches='tight')
+        plt.show()
+
+class PME2DBB(PDE):
+
+    dim             = 2
+    dirichlet_BCs   = "top|bottom|left|right"
+    initialB        = "back"
+    terminalB       = "front"
+    
+    def __init__(
+        self,
+        order:    int = 1,
+        C:        int = 1,
+        alpha:  float = 2,
+        beta:   float = 0.01,
+        printNum: int = 100,
+        maxIter:  int = 1001,
+        xmax:     int = 1,
+        ymax:     int = 1,
+        zmax:     int = 1,
+        nx:       int = 8,
+        ny:       int = 8,
+        nz:       int = 8,
+        sc: float = 0.1,
+        nonLinearSolver: str = "brent",
+        brentMin: float = 1e-15,
+        brentMax: float = 2
+    ):
+        
+        
+        self.sc = sc
+        self.alpha = alpha
+        self.nx, self.ny, self.nz = nx, ny, nz
+        self.xmax, self.ymax, self.zmax = xmax, ymax, zmax
+        if nonLinearSolver == "brent":
+            self.brentMin, self.brentMax = brentMin, brentMax
+
+        self.k = 1 / (self.alpha - 1 + 2 / self.dim)
+        self.s0 = self.sc * self.k * (self.alpha - 1) / 2 / self.dim / self.alpha
+
+        if C != 0: raise Exception("C must be 0 for Barenblatt data.")
+        if self.alpha < 2: raise Exception("alpha must >= 2.")
+
+        super().__init__(order, C, beta, printNum, maxIter, nonLinearSolver)
+        
+
+    # Implement abstract methods ----------------------------------------------
+    def create_mesh(self):
+        return MakeStructured2DMesh(nx = self.nx, ny = self.ny, mapping = lambda x, y : (self.xmax * x, self.ymax * y))
+    
+    def rho_exact(self):
+        r2 = (y - 0.5) ** 2 if self.dim == 1 else (y - 0.5) ** 2 + (z - 0.5) ** 2
+
+        val = 1 - r2 / self.sc / (self.beta * x + 1) ** (2 * self.k / self.dim) 
+        return (self.beta * x + 1) ** (-self.k) * IfPos(val, val ** (1 / (self.alpha - 1)), 0)
+    
+    def initial_guess(self):
+        r2 = (y - 0.5) ** 2 if self.dim == 1 else (y - 0.5) ** 2 + (z - 0.5) ** 2
+        val = 1 - r2 / self.sc / (self.beta * 0 + 1) ** (2 * self.k / self.dim) 
+        return (self.beta * 0 + 1) ** (-self.k) * IfPos(val, val ** (1 / (self.alpha - 1)), 0)
+    
+    def V1(self, rho): 
+        return self.s0 * rho
+
+    def V2(self, rho, C):
+        return 0
+    
+    def V3(self, rho):
+        return 1 / self.V1(rho) / self.d2E(rho) ** 2
+    
+    def E(self,rho):
+        return rho ** self.alpha / (self.alpha - 1)
+    
+    def dE(self, rho):
+        return rho ** (self.alpha - 1) * self.alpha / ( self.alpha - 1)
+    
+    def d2E(self, rho):
+        return rho ** (self.alpha - 2) * self.alpha
+    
+    def solveRho(self, m, s, n, rhoBar):
+        m_flat = m.vec.FV().NumPy()[:] ** 2
+        s_flat = 0 * s.vec.FV().NumPy()[:] 
+        n_flat = n.vec.FV().NumPy()[:] ** 2
+        rho_bar_flat = rhoBar.vec.FV().NumPy()[:]
+
+        def V1(r): return self.s0*r
         def V2(r): return 0
+        def V3(r): return 1 / V1(r) / d2E(r) ** 2
 
-        def V3(r): 
-            #if r < 1e-12: return 0
-            return 1 / V1(r) / d2E(r) ** 2
+        def dE(r): return r ** (self.alpha - 1) * self.alpha / (self.alpha - 1)
+        def d2E(r): return r ** (self.alpha - 2) * self.alpha
 
-
-        rho_flat = np.zeros_like(m_flat)
-
-        def F(rho, rhobar, mbar2, nbar2, sbar2):
-            return 0.5*(rho-rhobar)**2 + 0.5*mbar2/(1+V1(rho)) + 0.5*nbar2/(1+V3(rho)) + 0.5*sbar2/(1+V2(rho)) +0.5*self.beta**2*V2(rho)*dE(rho)*dE(rho)
+        def F(rho, rhobar, mbar2, nbar2, sbar2, *args):
+            return (  0.5 * (rho - rhobar) ** 2 
+                    + 0.5 * mbar2 / (1 + V1(rho)) 
+                    + 0.5 * nbar2 / (1 + V3(rho)) 
+                    + 0.5 * sbar2 / (1 + V2(rho)) 
+                    + 0.5 * self.beta ** 2 * V2(rho) * dE(rho) * dE(rho) )
         
-
-        for idx in range(m_flat.shape[0]):
-            mbar2, nbar2, sbar2 = m_flat[idx]**2, n_flat[idx]**2, s_flat[idx]**2
-            obj_fixed_idx = lambda rho : F(rho, rho_bar_flat[idx], mbar2, nbar2, sbar2)
-            rho_flat[idx] = brent.brent_find_minima(obj_fixed_idx, 1e-12, 2.0)
-        
-        return rho_flat
-    
-    
-    
-    
-
-    
-    
+        rho = brent.solve_rho(F, m_flat, s_flat, n_flat, rho_bar_flat, 1e-15, 2.0) 
+  
+        return rho
     
     
