@@ -324,7 +324,7 @@ class PDE(abc.ABC):
 
     def getTimeIntPoints(self):
         # Return a list of time quadrature points
-        #if self.dim != 1: raise NotImplementedError
+        if self.dim != 1: raise NotImplementedError
         X = IntegrationRuleSpaceSurface(self.mesh, order = self.order - 1, definedon = self.mesh.Boundaries("bottom"))
         int_points = X.GetIntegrationRules()[ET.SEGM].points
         points = set()
@@ -351,15 +351,7 @@ class PDE(abc.ABC):
         points.sort()
         return points
     
-    def evaluateQuadratureFun(self, t, xvals, qfu):
-        # Evaluates a quadrature function on (t, xvals) for scalar t and array xvals
-        if self.dim != 1: raise NotImplementedError
-        yvals = []
-        gfu = GridFunction(L2(self.mesh, order=self.order-1))
-        gfu.Interpolate(qfu)
-        for p in xvals:
-            yvals.append(gfu(self.mesh(t, p)))
-        return yvals
+    
     
 
 

@@ -182,8 +182,17 @@ class PME2D(PME):
         if nonLinearSolver == "brent":
             self.brentMin, self.brentMax = brentMin, brentMax
 
+        # C not utilized but must be > 0
         super().__init__(order, C, beta, printNum, maxIter, nonLinearSolver)
-        # C not utilized
+        
+        # Residual of the exact manufactured solution
+        self.rhoMfdRes = GridFunction(self.W)
+        rm  = -self.rho_exact().Diff(x) 
+        rm += self.beta * (self.rho_exact() ** self.alpha).Diff(y).Diff(y)
+        rm += self.beta * (self.rho_exact() ** self.alpha).Diff(z).Diff(z)
+        
+        self.rhoMfdRes.Interpolate(rm)
+        self.rhoMfdRes_flat = self.rhoMfdRes.vec.FV().NumPy()[:]
 
 
     # Implement abstract methods ----------------------------------------------
@@ -199,6 +208,7 @@ class PME2D(PME):
     def initial_guess(self):
         return (2 - 0) + 0.1 * exp(-0.1 * 0) * cos(2 * pi * y) * cos(2 * pi * z) 
 
+# Barenblatt --------------------------------------------------------------------------------------------
 
 class PME1DBB(PDE):
 
@@ -448,6 +458,16 @@ class PME1DBB(PDE):
         filename = "1D_alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
         fig.savefig(filename + ".pdf", dpi=300,bbox_inches='tight')
         plt.show()
+    
+    def evaluateQuadratureFun(self, t, xvals, qfu):
+        # Evaluates a quadrature function on (t, xvals) for scalar t and array xvals
+        if self.dim != 1: raise NotImplementedError
+        yvals = []
+        gfu = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu.Interpolate(qfu)
+        for p in xvals:
+            yvals.append(gfu(self.mesh(t, p)))
+        return yvals
 
 class PME2DBB(PDE):
 
@@ -459,7 +479,7 @@ class PME2DBB(PDE):
     def __init__(
         self,
         order:    int = 1,
-        C:        int = 1,
+        C:        int = 0,
         alpha:  float = 2,
         beta:   float = 0.01,
         printNum: int = 100,
@@ -495,7 +515,10 @@ class PME2DBB(PDE):
 
     # Implement abstract methods ----------------------------------------------
     def create_mesh(self):
-        return MakeStructured2DMesh(nx = self.nx, ny = self.ny, mapping = lambda x, y : (self.xmax * x, self.ymax * y))
+        return MakeStructured3DMesh(
+            nx = self.nx, ny = self.ny, nz = self.nz, 
+            mapping=lambda x, y, z : (self.xmax * x, self.ymax * y, self.zmax * z)
+            )
     
     def rho_exact(self):
         r2 = (y - 0.5) ** 2 if self.dim == 1 else (y - 0.5) ** 2 + (z - 0.5) ** 2
@@ -527,9 +550,9 @@ class PME2DBB(PDE):
         return rho ** (self.alpha - 2) * self.alpha
     
     def solveRho(self, m, s, n, rhoBar):
-        m_flat = m.vec.FV().NumPy()[:] ** 2
+        m_flat = m[0].vec.FV().NumPy()[:] ** 2 + m[1].vec.FV().NumPy()[:] ** 2
         s_flat = 0 * s.vec.FV().NumPy()[:] 
-        n_flat = n.vec.FV().NumPy()[:] ** 2
+        n_flat = n[0].vec.FV().NumPy()[:] ** 2 + n[0].vec.FV().NumPy()[:] ** 2
         rho_bar_flat = rhoBar.vec.FV().NumPy()[:]
 
         def V1(r): return self.s0*r
@@ -549,5 +572,17 @@ class PME2DBB(PDE):
         rho = brent.solve_rho(F, m_flat, s_flat, n_flat, rho_bar_flat, 1e-15, 2.0) 
   
         return rho
+    def evaluateQuadratureFun(self, t, xvals, yvals, qfu):
+        # t: scalar
+        # xvals, yvals: meshgrid
+        # qfu: spacetime quadrature function
+        
+        evals = np.zeros_like(xvals)
+        gfu = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu.Interpolate(qfu)
+        for i in range(len(xvals)):
+            for j in range(len(xvals)):
+                evals[i,j] = gfu(self.mesh(t, xvals[i,j], yvals[i,j]))
+        return evals
     
     

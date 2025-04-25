@@ -7,3 +7,4 @@ brent_minima.cpython-312-x86_64-linux-gnu.so
 FokkerPlanck.*
 alpha_2_order_4_nx_32_ny_32.pdf
 alpha_2_order_4_nx_32_ny_32.gif
+*.npy
