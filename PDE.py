@@ -57,12 +57,17 @@ class PDE(abc.ABC):
                         order = self.order - 1, 
                         definedon = self.mesh.Boundaries(self.terminalB)
                     )
+        
+        self.TopSpace = IntegrationRuleSpaceSurface(self.mesh, order = self.order - 1, definedon = self.mesh.Boundaries("top"))
+        self.BotSpace = IntegrationRuleSpaceSurface(self.mesh, order = self.order - 1, definedon = self.mesh.Boundaries("bottom"))
 
         self.rho = self.W.TrialFunction()
 
         self.dx  = dx(intrules  = self.W.GetIntegrationRules())
         self.dsr = ds(definedon = self.mesh.Boundaries(self.terminalB), intrules = self.M.GetIntegrationRules())
         self.dsl = ds(definedon = self.mesh.Boundaries(self.initialB),  intrules = self.M.GetIntegrationRules())
+        self.dsb = ds(definedon = self.mesh.Boundaries("bottom"), intrules = self.BotSpace.GetIntegrationRules())
+        self.dst = ds(definedon = self.mesh.Boundaries("top"), intrules = self.TopSpace.GetIntegrationRules())
 
         self.gfu = GridFunction(self.fes)
         self.phih0    = GridFunction(self.V)
@@ -79,7 +84,6 @@ class PDE(abc.ABC):
         self.rhoTh    = GridFunction(self.M)
         self.rhoTh0   = GridFunction(self.M)
         self.rhoThex  = GridFunction(self.M)
-        
         
         self.drhoTh = self.rhoTh.vec.CreateVector()
         self.rhoT = self.M.TrialFunction()
@@ -163,6 +167,23 @@ class PDE(abc.ABC):
         self.f += -self.rhoh * grad(self.psi)[0] * self.dx
         ## m
         self.f += -self.mh1 * grad(self.psi)[1] * self.dx
+
+        # Exact neumann boundary conditions (needed for Fokker Planck)
+        # self.f += -self.beta*(self.K*self.rho_exact().Diff(y) + self.rho_exact()*self.v)*self.psi*self.dst
+        # self.f +=  self.beta*(self.K*self.rho_exact().Diff(y) + self.rho_exact()*self.v)*self.psi*self.dsb
+        if len(self.dirichlet_BCs) == 0:
+            self.f += -self.beta*self.V1(self.rho_exact())*(self.dE(self.rho_exact())).Diff(y)*self.psi*self.dst
+            self.f +=  self.beta*self.V1(self.rho_exact())*(self.dE(self.rho_exact())).Diff(y)*self.psi*self.dsb
+            self.f +=  self.beta*self.rho_exact()*self.tau1*self.dst
+            self.f += -self.beta*self.rho_exact()*self.tau1*self.dsb
+
+            if self.dim == 2:
+                self.f += -self.beta*self.V1(self.rho_exact())*(self.dE(self.rho_exact())).Diff(z)*self.psi*self.dst
+                self.f +=  self.beta*self.V1(self.rho_exact())*(self.dE(self.rho_exact())).Diff(z)*self.psi*self.dsb
+                self.f +=  self.beta*self.rho_exact()*self.tau2*self.dst
+                self.f += -self.beta*self.rho_exact()*self.tau2*self.dsb
+        
+        
         if self.dim == 2:
             self.f += -self.mh2 * grad(self.psi)[2] * self.dx
         ## s
@@ -351,6 +372,113 @@ class PDE(abc.ABC):
         points.sort()
         return points
     
+    def evaluateQuadratureFun(self, t, xvals, qfu):
+        # Evaluates a quadrature function on (t, xvals) for scalar t and array xvals
+        if self.dim != 1: raise NotImplementedError
+        yvals = []
+        gfu = GridFunction(L2(self.mesh, order=self.order-1))
+        gfu.Interpolate(qfu)
+        for p in xvals:
+            yvals.append(gfu(self.mesh(t, p)))
+        return yvals
+    
+    def snapshots(self, fig, ax, color='r', save=False):
+        if self.dim != 1:
+            raise NotImplementedError
+
+        t_ = self.getTimeIntPoints()
+        x_ = self.getSpaceIntPoints()
+
+        t_start = t_[0]
+        t_middle = t_[len(t_) // 3]
+        t_end = t_[-1]
+        #print(t_start, t_middle, t_end)
+
+        y_rhohex_start = self.evaluateQuadratureFun(t_start, x_, self.rhohex)
+        y_rhoh_start = self.evaluateQuadratureFun(t_start, x_, self.rhoh)
+
+        y_rhohex_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhohex)
+        y_rhoh_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhoh)
+
+        y_rhohex_end = self.evaluateQuadratureFun(t_end, x_, self.rhohex)
+        y_rhoh_end = self.evaluateQuadratureFun(t_end, x_, self.rhoh)
+
+        ax.plot(x_, y_rhoh_start, '-', color=color, label=r'Numerical solution' )
+        ax.plot(x_, y_rhoh_middle, '-', color=color)
+        ax.plot(x_, y_rhoh_end, '-', color=color)
+        ax.plot(x_, y_rhohex_start, ':k', linewidth=3, label=r'Exact solution')
+        ax.plot(x_, y_rhohex_middle, ':k', linewidth=3)
+        ax.plot(x_, y_rhohex_end, ':k', linewidth=3)
+        
+
+        ax.set_xlim(min(x_), max(x_))
+        ax.set_ylim(0, max(y_rhohex_start)*1.1)
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(r'$\rho(x)$')
+        fig.subplots_adjust(bottom=0.2)  
+        ax.legend(
+            loc='upper center', 
+            bbox_to_anchor=(0.5, -0.15), 
+            ncol=3, 
+            frameon=False
+        )
+
+        ax.set_title(r'Snapshots at $t = {:.3f}, {:.3f}, {:.3f}$'.format(
+            t_start, t_middle, t_end))
+        if save:
+            filename = self.__class__.__name__ + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+            try: filename += "_alpha_" + self.alpha 
+            except: None
+            fig.savefig(filename + ".pdf", dpi=300,bbox_inches='tight')
+        plt.show()
+    
+    def animate(self, fig, ax, save=True, color='r'):
+        if self.dim != 1: raise NotImplementedError
+
+        t_ = self.getTimeIntPoints()
+        x_ = self.getSpaceIntPoints()
+
+        
+        line1, = ax.plot([], [], '--k', label=r'Initial condition')
+        line2, = ax.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
+        line4, = ax.plot([], [], '-', label=r'Numerical solution', color=color)
+
+        ax.set_xlim(min(x_), max(x_))
+        ax.set_xlabel(r'$x$')
+        ax.set_ylabel(r'$\rho(x)$')
+
+        fig.subplots_adjust(bottom=0.2)  
+        ax.legend(
+            loc='upper center', 
+            bbox_to_anchor=(0.5, -0.15), 
+            ncol=3, 
+            frameon=False
+        )
+        
+        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
+        ax.set_ylim(0, max(initial_y_rhohex)*1.1)
+        def anim(i):
+            current_t = t_[i]
+            current_y_rhohex = self.evaluateQuadratureFun(current_t, x_, self.rhohex)
+            current_y_rhoh   = self.evaluateQuadratureFun(current_t, x_, self.rhoh)
+            
+            line1.set_data(x_, initial_y_rhohex)
+            line2.set_data(x_, current_y_rhohex)
+            line4.set_data(x_, current_y_rhoh)
+
+            ax.set_title(r'Time $t = $'+ "{:.3f}".format(current_t))
+            return line1, line2, line4
+
+        ani = animation.FuncAnimation(
+            fig, anim, frames=len(t_), interval=25, blit=True, repeat=False
+        )
+
+        plt.show()
+        if save:
+            filename = self.__class__.__name__ + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
+            try: filename += "_alpha_" + self.alpha 
+            except: None
+            ani.save(filename + ".gif", writer='pillow', fps=20)
     
     
 

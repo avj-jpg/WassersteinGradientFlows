@@ -310,57 +310,6 @@ class PME1DBB(PDE):
   
         return rho
     
-    def animate(self, fig, ax, save=True, color='r'):
-        if self.dim != 1: raise NotImplementedError
-
-        t_ = self.getTimeIntPoints()
-        x_ = self.getSpaceIntPoints()
-
-        
-        line1, = ax.plot([], [], '--k', label=r'Initial condition')
-        line2, = ax.plot([], [], ':', label=r'Exact solution', color=color,linewidth=3)
-        #line3, = ax.plot([], [], '-k', label='')
-        line4, = ax.plot([], [], '-', label=r'Numerical solution', color=color)
-
-        ax.set_xlim(min(x_), max(x_))
-        ax.set_ylim(0,1.05)
-        ax.set_xlabel(r'$x$')
-        ax.set_ylabel(r'$\rho(x)$')
-        #ax.legend(loc = "upper left")
-
-        fig.subplots_adjust(bottom=0.2)  
-        ax.legend(
-            loc='upper center', 
-            bbox_to_anchor=(0.5, -0.15), 
-            ncol=3, 
-            frameon=False
-        )
-        
-
-        initial_y_rhohex = self.evaluateQuadratureFun(t_[0], x_, self.rhohex)
-        #initial_y_rhoh = self.evaluateQuadratureFun(t_[0], x_, self.rhoh)
-        
-        def anim(i):
-            current_t = t_[i]
-            current_y_rhohex = self.evaluateQuadratureFun(current_t, x_, self.rhohex)
-            current_y_rhoh = self.evaluateQuadratureFun(current_t, x_, self.rhoh)
-            
-            line1.set_data(x_, initial_y_rhohex)
-            line2.set_data(x_, current_y_rhohex)
-            #line3.set_data(x_, initial_y_rhoh)
-            line4.set_data(x_, current_y_rhoh)
-
-            ax.set_title(r'Time $t = $'+ "{:.3f}".format(current_t))
-            return line1, line2, line4
-
-        ani = animation.FuncAnimation(
-            fig, anim, frames=len(t_), interval=25, blit=True, repeat=False
-        )
-
-        plt.show()
-        if save:
-            filename = "alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
-            ani.save(filename + ".gif", writer='pillow', fps=20)
 
     def animateWithErr(self, fig, ax, save="True", color='r'):
         if self.dim != 1: raise NotImplementedError
@@ -418,56 +367,6 @@ class PME1DBB(PDE):
             filename = "Err_alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
             ani.save(filename + ".gif", writer='pillow', fps=20)
             
-    def snapshots(self, fig, ax, color='r'):
-        if self.dim != 1:
-            raise NotImplementedError
-
-        t_ = self.getTimeIntPoints()
-        x_ = self.getSpaceIntPoints()
-
-        t_start = t_[0]
-        t_middle = t_[len(t_) // 3]
-        t_end = t_[-1]
-        print(t_start, t_middle, t_end)
-
-        y_rhohex_start = self.evaluateQuadratureFun(t_start, x_, self.rhohex)
-        y_rhoh_start = self.evaluateQuadratureFun(t_start, x_, self.rhoh)
-
-        y_rhohex_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhohex)
-        y_rhoh_middle = self.evaluateQuadratureFun(t_middle, x_, self.rhoh)
-
-        y_rhohex_end = self.evaluateQuadratureFun(t_end, x_, self.rhohex)
-        y_rhoh_end = self.evaluateQuadratureFun(t_end, x_, self.rhoh)
-
-        ax.plot(x_, y_rhoh_start, '-', color=color )
-        ax.plot(x_, y_rhoh_middle, '-', color=color)
-        ax.plot(x_, y_rhoh_end, '-', color=color)
-        ax.plot(x_, y_rhohex_start, ':k', linewidth=3)
-        ax.plot(x_, y_rhohex_middle, ':k', linewidth=3)
-        ax.plot(x_, y_rhohex_end, ':k', linewidth=3)
-        
-
-        ax.set_xlim(min(x_), max(x_))
-        ax.set_ylim(0, 1.05)
-        ax.set_xlabel(r'$x$')
-        ax.set_ylabel(r'$\rho(x)$')
-        #ax.legend(loc="upper left")
-
-        ax.set_title(r'Snapshots at $t = {:.3f}, {:.3f}, {:.3f}$'.format(
-            t_start, t_middle, t_end))
-        filename = "1D_alpha_" + str(self.alpha) + "_order_" + str(self.order) + "_nx_" + str(self.nx) + "_ny_" + str(self.ny)
-        fig.savefig(filename + ".pdf", dpi=300,bbox_inches='tight')
-        plt.show()
-    
-    def evaluateQuadratureFun(self, t, xvals, qfu):
-        # Evaluates a quadrature function on (t, xvals) for scalar t and array xvals
-        if self.dim != 1: raise NotImplementedError
-        yvals = []
-        gfu = GridFunction(L2(self.mesh, order=self.order-1))
-        gfu.Interpolate(qfu)
-        for p in xvals:
-            yvals.append(gfu(self.mesh(t, p)))
-        return yvals
 
 class PME2DBB(PDE):
 
